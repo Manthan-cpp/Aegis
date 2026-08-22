@@ -1,9 +1,5 @@
 # Aegis
 
-<div align="center">
-  <img src="home_page.png" alt="Aegis Home Page" width="800">
-</div>
-
 **A stealth safety and support companion designed to protect.**
 
 ---
@@ -15,6 +11,10 @@ When the world feels unsafe, reaching out for help shouldn't put you in more dan
 ## 🛡️ The Solution: Aegis
 
 Aegis is a private, zero-cost safety toolkit disguised as a simple, functioning calculator on your device. Behind this unassuming facade lies a powerful suite of support tools. By entering a secret PIN, the calculator transforms into a secure space where users can access discreet SOS communication, emotional support, legal guidance, and health information. Aegis is built on a privacy-first, offline-resilient architecture that ensures a person can choose the safest next step without leaving a trace.
+
+<div align="center">
+  <img src="home_page.png" alt="Aegis Home Page" width="800">
+</div>
 
 ---
 
