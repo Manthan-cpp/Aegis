@@ -1,0 +1,30 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Common Directories
+node_modules/
+__pycache__/
+.venv/
+venv/
+env/
+.env
+
+# Logs
+*.log
+
+# Large / Backup files
+*.bak
+*.orig

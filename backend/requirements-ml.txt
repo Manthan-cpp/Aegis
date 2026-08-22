@@ -1,0 +1,8 @@
+# Install this ONLY when starting Phase 4 (legal RAG bot embeddings).
+# Not needed for Phases 0-3.
+#
+# Install CPU-only torch first to avoid pulling several GB of CUDA packages:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-ml.txt
+#
+sentence-transformers==3.3.1
