@@ -4694,6 +4694,42 @@ body {
 .dm-profile-result:hover,
 .dm-conversation-item:hover { border-color: rgba(194, 84, 112, .25); background: rgba(255, 255, 255, .8); }
 
+/* Disappearing-message controls and WhatsApp-style multi-select actions. */
+.dm-conversation-heading { justify-content: flex-start; }
+.dm-conversation-tools { display: flex !important; min-width: 0; margin-left: auto; align-items: center; gap: 7px; }
+.dm-tool-button,
+.dm-delete-button { border: 1px solid rgba(194, 84, 112, .2); border-radius: 999px; padding: 8px 11px; background: #fff; color: var(--aegis-rose-dark); cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+.dm-tool-button:hover,
+.dm-delete-button:hover:not(:disabled) { border-color: rgba(194, 84, 112, .42); background: var(--aegis-pale-pink); box-shadow: 0 6px 14px rgba(159, 63, 91, .1); transform: translateY(-1px); }
+.dm-tool-button.is-active { border-color: rgba(194, 84, 112, .38); background: var(--aegis-pale-pink); }
+.dm-settings-panel { display: grid; gap: 14px; border-bottom: 1px solid rgba(194, 84, 112, .13); padding: 15px 20px 17px; background: rgba(253, 232, 237, .34); }
+.dm-settings-toggle { display: flex; align-items: flex-start; gap: 10px; color: var(--aegis-plum); cursor: pointer; }
+.dm-settings-toggle input { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--aegis-rose); }
+.dm-settings-toggle span { display: grid; gap: 3px; }
+.dm-settings-toggle strong { font-size: 11px; }
+.dm-settings-toggle small,
+.dm-settings-help { margin: 0; color: #8f8288; font-size: 9px; line-height: 1.5; }
+.dm-settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; color: var(--aegis-plum); font-size: 10px; font-weight: 700; }
+.dm-settings-row select,
+.dm-settings-row input { min-height: 35px; border: 1px solid rgba(194, 84, 112, .2); border-radius: 9px; padding: 7px 9px; background: #fff; color: var(--foreground); font: inherit; font-size: 10px; }
+.dm-settings-row input { width: 110px; }
+.dm-settings-panel .dm-primary-button { justify-self: start; }
+.dm-selection-toolbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(194, 84, 112, .1); padding: 8px 20px; background: rgba(253, 232, 237, .23); color: #8f8288; font-size: 10px; }
+.dm-delete-button { border-color: rgba(194, 84, 112, .28); color: #9f3f5b; }
+.dm-delete-button:disabled { cursor: not-allowed; opacity: .45; }
+.dm-message.is-selectable { cursor: pointer; outline: 2px solid transparent; outline-offset: 2px; transition: outline-color 140ms ease, box-shadow 140ms ease; }
+.dm-message.is-selectable:hover,
+.dm-message.is-selected { outline-color: rgba(194, 84, 112, .38); box-shadow: 0 0 0 4px rgba(194, 84, 112, .08); }
+
+@media (max-width: 520px) {
+  .dm-conversation-heading { align-items: flex-start; flex-wrap: wrap; }
+  .dm-conversation-tools { width: 100%; margin-left: 42px; }
+  .dm-tool-button { flex: 1 1 auto; }
+  .dm-settings-row { align-items: flex-start; flex-direction: column; }
+  .dm-settings-row select,
+  .dm-settings-row input { width: 100%; }
+}
+
 @keyframes aegis-rotate { to { transform: rotate(360deg); } }
 @keyframes aegis-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.045); } }
 

@@ -19,13 +19,35 @@ type Conversation = {
   last_sender_id: string;
   updated_at: string;
   is_last_message_from_me: boolean;
+  disappearing_enabled: boolean;
+  disappearing_seconds: number;
 };
+
+type ConversationSettings = {
+  conversation_id: string;
+  disappearing_enabled: boolean;
+  disappearing_seconds: number;
+};
+
+const DISAPPEARING_OPTIONS = [
+  { value: 10, label: "10 seconds" },
+  { value: 600, label: "10 minutes" },
+  { value: 3_600, label: "1 hour" },
+  { value: 21_600, label: "6 hours" },
+  { value: 36_000, label: "10 hours" },
+  { value: 86_400, label: "24 hours" },
+];
+
+function disappearingLabel(seconds: number) {
+  return DISAPPEARING_OPTIONS.find((option) => option.value === seconds)?.label || `${seconds} seconds`;
+}
 
 type Message = {
   message_id: string;
   sender_id: string;
   content: string;
   created_at: string;
+  expires_at: string | null;
   is_from_me: boolean;
 };
 
@@ -77,6 +99,13 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
   const [isSending, setIsSending] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsEnabled, setSettingsEnabled] = useState(false);
+  const [settingsSeconds, setSettingsSeconds] = useState("21600");
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
   const pendingMessageRef = useRef<{ content: string; clientMessageId: string } | null>(null);
 
   const displayName = useMemo(
@@ -138,8 +167,17 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
     const loaded = await request<Conversation[]>("/dm/conversations");
     setConversations(loaded);
     setSelected((current) => {
-      if (!current) return loaded[0] || null;
-      return loaded.find((item) => item.conversation_id === current.conversation_id) || current;
+      const next = !current
+        ? (loaded[0] || null)
+        : (loaded.find((item) => item.conversation_id === current.conversation_id) || current);
+      if (next && (!current
+        || next.conversation_id !== current.conversation_id
+        || next.disappearing_enabled !== current.disappearing_enabled
+        || next.disappearing_seconds !== current.disappearing_seconds)) {
+        setSettingsEnabled(next.disappearing_enabled);
+        setSettingsSeconds(String(next.disappearing_seconds || 21600));
+      }
+      return next;
     });
   }, [request]);
 
@@ -207,12 +245,35 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
         };
         socket.onmessage = (event) => {
           try {
-            const payload = JSON.parse(event.data) as { type?: string; message?: Message };
-            if (payload.type !== "message" || !payload.message) return;
-            setMessages((current) => current.some((message) => message.message_id === payload.message?.message_id)
-              ? current
-              : [...current, payload.message as Message]);
-            void loadConversations();
+            const payload = JSON.parse(event.data) as {
+              type?: string;
+              message?: Message;
+              settings?: ConversationSettings;
+              deleted_message_ids?: string[];
+            };
+            if (payload.type === "message" && payload.message) {
+              setMessages((current) => current.some((message) => message.message_id === payload.message?.message_id)
+                ? current
+                : [...current, payload.message as Message]);
+              void loadConversations();
+              return;
+            }
+            if (payload.type === "settings" && payload.settings) {
+              const settings = payload.settings;
+              setSelected((current) => current?.conversation_id === settings.conversation_id
+                ? { ...current, ...settings }
+                : current);
+              setConversations((current) => current.map((conversation) => conversation.conversation_id === settings.conversation_id
+                ? { ...conversation, ...settings }
+                : conversation));
+              return;
+            }
+            if (payload.type === "messages_deleted" && payload.deleted_message_ids) {
+              const deletedIds = new Set(payload.deleted_message_ids);
+              setMessages((current) => current.filter((message) => !deletedIds.has(message.message_id)));
+              setSelectedMessageIds((current) => current.filter((messageId) => !deletedIds.has(messageId)));
+              void loadConversations();
+            }
           } catch {
             // Keep the conversation usable if a malformed event is received.
           }
@@ -232,6 +293,17 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
       socket?.close();
     };
   }, [getToken, loadConversations, loadMessages, request, selected]);
+
+  useEffect(() => {
+    const cleanupTimer = window.setInterval(() => {
+      const now = Date.now();
+      setMessages((current) => {
+        const next = current.filter((message) => !message.expires_at || Date.parse(message.expires_at) > now);
+        return next.length === current.length ? current : next;
+      });
+    }, 15_000);
+    return () => window.clearInterval(cleanupTimer);
+  }, []);
 
   if (!isLoaded) {
     return <section className="dm-flow"><p className="dm-muted">Loading account…</p></section>;
@@ -260,6 +332,11 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
         body: JSON.stringify({ username: profile.username }),
       });
       setSelected(conversation);
+      setSettingsEnabled(conversation.disappearing_enabled);
+      setSettingsSeconds(String(conversation.disappearing_seconds || 21600));
+      setIsSettingsOpen(false);
+      setSelectionMode(false);
+      setSelectedMessageIds([]);
       setResults([]);
       setSearch("");
       await loadConversations();
@@ -267,6 +344,15 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
     } catch (requestError: unknown) {
       setError(requestError instanceof Error ? requestError.message : "Aegis could not start that conversation.");
     }
+  }
+
+  function selectConversation(conversation: Conversation) {
+    setSelected(conversation);
+    setSettingsEnabled(conversation.disappearing_enabled);
+    setSettingsSeconds(String(conversation.disappearing_seconds || 21600));
+    setIsSettingsOpen(false);
+    setSelectionMode(false);
+    setSelectedMessageIds([]);
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -296,6 +382,69 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
       setError(requestError instanceof Error ? requestError.message : "Aegis could not send that message.");
     } finally {
       setIsSending(false);
+    }
+  }
+
+  function toggleMessageSelection(messageId: string) {
+    setSelectedMessageIds((current) => current.includes(messageId)
+      ? current.filter((id) => id !== messageId)
+      : [...current, messageId]);
+  }
+
+  async function saveConversationSettings() {
+    if (!selected) return;
+    const seconds = Number(settingsSeconds);
+    if (!Number.isSafeInteger(seconds) || seconds < 10 || !DISAPPEARING_OPTIONS.some((option) => option.value === seconds)) {
+      setError("Choose one of the available timers, starting at 10 seconds.");
+      return;
+    }
+    setIsSavingSettings(true);
+    setError("");
+    try {
+      const saved = await request<ConversationSettings>(`/dm/conversations/${selected.conversation_id}/settings`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: settingsEnabled, seconds }),
+      });
+      setSelected((current) => current?.conversation_id === saved.conversation_id
+        ? { ...current, ...saved }
+        : current);
+      setConversations((current) => current.map((conversation) => conversation.conversation_id === saved.conversation_id
+        ? { ...conversation, ...saved }
+        : conversation));
+      setSettingsSeconds(String(saved.disappearing_seconds));
+      setSettingsEnabled(saved.disappearing_enabled);
+      setIsSettingsOpen(false);
+      setNotice(saved.disappearing_enabled
+        ? `New messages will disappear after ${disappearingLabel(saved.disappearing_seconds)}.`
+        : "Disappearing messages are turned off.");
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Aegis could not save that setting.");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
+  async function deleteSelectedMessages() {
+    if (!selected || selectedMessageIds.length === 0) return;
+    setIsDeleting(true);
+    setError("");
+    try {
+      const deleted = await request<{ deleted_message_ids: string[] }>(`/dm/conversations/${selected.conversation_id}/messages`, {
+        method: "DELETE",
+        body: JSON.stringify({ message_ids: selectedMessageIds }),
+      });
+      const deletedIds = new Set(deleted.deleted_message_ids);
+      setMessages((current) => current.filter((message) => !deletedIds.has(message.message_id)));
+      setSelectedMessageIds([]);
+      setSelectionMode(false);
+      setNotice(deleted.deleted_message_ids.length === 1
+        ? "Message deleted."
+        : `${deleted.deleted_message_ids.length} messages deleted.`);
+      void loadConversations();
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Aegis could not delete those messages.");
+    } finally {
+      setIsDeleting(false);
     }
   }
 
@@ -341,7 +490,7 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
                 className={`dm-conversation-item ${selected?.conversation_id === conversation.conversation_id ? "is-selected" : ""}`}
                 type="button"
                 key={conversation.conversation_id}
-                onClick={() => setSelected(conversation)}
+                onClick={() => selectConversation(conversation)}
               >
                 <span className="dm-profile-avatar" aria-hidden="true">{conversation.recipient.username.slice(0, 1).toUpperCase()}</span>
                 <span><strong>{conversation.recipient.display_name}</strong><small>@{conversation.recipient.username}</small><em>{conversation.last_message || "Conversation started"}</em></span>
@@ -356,11 +505,64 @@ function AuthenticatedMessagesFlow({ onBack }: { onBack: () => void }) {
               <div className="dm-conversation-heading">
                 <span className="dm-profile-avatar" aria-hidden="true">{selected.recipient.username.slice(0, 1).toUpperCase()}</span>
                 <div><strong>{selected.recipient.display_name}</strong><small>@{selected.recipient.username}</small></div>
+                <div className="dm-conversation-tools">
+                  <button className={`dm-tool-button ${selected.disappearing_enabled ? "is-active" : ""}`} type="button" onClick={() => setIsSettingsOpen((current) => !current)}>
+                    {selected.disappearing_enabled ? `${disappearingLabel(selected.disappearing_seconds)} disappearing` : "Disappearing"}
+                  </button>
+                  <button className={`dm-tool-button ${selectionMode ? "is-active" : ""}`} type="button" onClick={() => {
+                    setSelectionMode((current) => !current);
+                    setSelectedMessageIds([]);
+                  }}>
+                    {selectionMode ? "Cancel" : "Select"}
+                  </button>
+                </div>
               </div>
+              {isSettingsOpen && (
+                <div className="dm-settings-panel" role="region" aria-label="Disappearing message settings">
+                  <label className="dm-settings-toggle">
+                    <input type="checkbox" checked={settingsEnabled} onChange={(event) => setSettingsEnabled(event.target.checked)} />
+                    <span><strong>Disappearing messages</strong><small>Only messages sent after saving this setting will expire.</small></span>
+                  </label>
+                  <div className="dm-settings-row">
+                    <label htmlFor="dm-disappearing-duration">Delete new messages after</label>
+                    <select
+                      id="dm-disappearing-duration"
+                      value={settingsSeconds}
+                      onChange={(event) => setSettingsSeconds(event.target.value)}
+                    >
+                      {DISAPPEARING_OPTIONS.map((option) => (
+                        <option value={option.value} key={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="dm-settings-help">Choose when new messages should disappear. The minimum timer is 10 seconds.</p>
+                  <button className="dm-primary-button" type="button" onClick={() => void saveConversationSettings()} disabled={isSavingSettings}>
+                    {isSavingSettings ? "Saving…" : "Save settings"}
+                  </button>
+                </div>
+              )}
+              {selectionMode && (
+                <div className="dm-selection-toolbar" role="toolbar" aria-label="Selected messages">
+                  <span>{selectedMessageIds.length} selected</span>
+                  <button className="dm-delete-button" type="button" onClick={() => void deleteSelectedMessages()} disabled={isDeleting || selectedMessageIds.length === 0}>
+                    {isDeleting ? "Deleting…" : "Delete selected"}
+                  </button>
+                </div>
+              )}
               <div className="dm-messages" data-lenis-prevent aria-live="polite">
                 {messages.length === 0 && <p className="dm-empty-conversation">This is the beginning of a private conversation.</p>}
                 {messages.map((message) => (
-                  <div className={`dm-message ${message.is_from_me ? "is-mine" : "is-theirs"}`} key={message.message_id}>
+                  <div
+                    className={`dm-message ${message.is_from_me ? "is-mine" : "is-theirs"} ${selectionMode ? "is-selectable" : ""} ${selectedMessageIds.includes(message.message_id) ? "is-selected" : ""}`}
+                    key={message.message_id}
+                    role={selectionMode ? "checkbox" : undefined}
+                    aria-checked={selectionMode ? selectedMessageIds.includes(message.message_id) : undefined}
+                    tabIndex={selectionMode ? 0 : undefined}
+                    onClick={selectionMode ? () => toggleMessageSelection(message.message_id) : undefined}
+                    onKeyDown={selectionMode ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") toggleMessageSelection(message.message_id);
+                    } : undefined}
+                  >
                     <p>{message.content}</p>
                     <time dateTime={message.created_at}>{message.is_from_me ? "You" : selected.recipient.display_name}</time>
                   </div>

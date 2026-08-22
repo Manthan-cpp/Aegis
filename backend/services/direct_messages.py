@@ -4,18 +4,35 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pymongo.errors import PyMongoError
 
 from services.clerk_directory import find_username_profiles
-from services.direct_message_store import LocalDirectMessageStore, LocalDirectMessageStoreError
+from services.direct_message_store import (
+    DEFAULT_DISAPPEARING_SECONDS,
+    LocalDirectMessageStore,
+    LocalDirectMessageStoreError,
+    MIN_DISAPPEARING_SECONDS,
+)
 from services.mongo import mark_mongo_unavailable, mongo_database
 
 
 class DirectMessageError(RuntimeError):
     """A user-facing private-message error."""
+
+
+class InvalidDisappearingSettings(DirectMessageError):
+    """A disappearing-message setting that does not meet the product rules."""
+
+
+def validate_disappearing_seconds(seconds: int) -> int:
+    """Keep disappearing timers at or above the product minimum of 10 seconds."""
+
+    if seconds < MIN_DISAPPEARING_SECONDS:
+        raise InvalidDisappearingSettings("Choose a disappearing-message timer of at least 10 seconds.")
+    return seconds
 
 
 def _database():
@@ -70,6 +87,7 @@ def _collections():
             unique=True,
             sparse=True,
         )
+        messages.create_index([("conversation_id", 1), ("expires_at", 1)])
     except PyMongoError:
         # Index creation is best-effort on first use; reads and writes still
         # produce a clear database error if Atlas is unavailable.
@@ -92,6 +110,10 @@ def _profile(document: dict[str, Any]) -> dict[str, str]:
 
 
 def _conversation(document: dict[str, Any], recipient: dict[str, Any], current_user_id: str) -> dict[str, Any]:
+    legacy_hours = int(document.get("disappearing_hours", 6))
+    disappearing_seconds = int(
+        document.get("disappearing_seconds", legacy_hours * 60 * 60)
+    )
     return {
         "conversation_id": str(document.get("conversation_id", document.get("_id", ""))),
         "recipient": _profile(recipient),
@@ -99,6 +121,41 @@ def _conversation(document: dict[str, Any], recipient: dict[str, Any], current_u
         "last_sender_id": str(document.get("last_sender_id", "")),
         "updated_at": _iso(document.get("updated_at")),
         "is_last_message_from_me": str(document.get("last_sender_id", "")) == current_user_id,
+        "disappearing_enabled": bool(document.get("disappearing_enabled", False)),
+        "disappearing_seconds": disappearing_seconds,
+    }
+
+
+def _purge_expired_messages(conversations, messages, conversation_id: str) -> bool:
+    """Delete expired messages and keep the conversation preview accurate."""
+
+    result = messages.delete_many(
+        {"conversation_id": conversation_id, "expires_at": {"$lte": datetime.now(UTC)}}
+    )
+    if not getattr(result, "deleted_count", 0):
+        return False
+
+    latest_cursor = messages.find({"conversation_id": conversation_id}).sort("created_at", -1).limit(1)
+    latest = next(iter(latest_cursor), None)
+    conversations.update_one(
+        {"conversation_id": conversation_id},
+        {"$set": {
+            "last_message": str(latest.get("content", "")) if latest else "",
+            "last_sender_id": str(latest.get("sender_id", "")) if latest else "",
+            "updated_at": datetime.now(UTC),
+        }},
+    )
+    return True
+
+
+def _message_response(document: dict[str, Any], user_id: str) -> dict[str, Any]:
+    return {
+        "message_id": str(document.get("message_id", document.get("_id", ""))),
+        "sender_id": str(document.get("sender_id", "")),
+        "content": str(document.get("content", "")),
+        "created_at": _iso(document.get("created_at")),
+        "expires_at": _iso(document.get("expires_at")) if document.get("expires_at") else None,
+        "is_from_me": str(document.get("sender_id", "")) == user_id,
     }
 
 
@@ -226,6 +283,8 @@ def create_conversation(user_id: str, recipient_username: str) -> dict[str, Any]
             "updated_at": now,
             "last_message": "",
             "last_sender_id": "",
+            "disappearing_enabled": False,
+            "disappearing_seconds": DEFAULT_DISAPPEARING_SECONDS,
         }
         conversations.insert_one(document)
         return _conversation(document, target, user_id)
@@ -238,11 +297,15 @@ def list_conversations(user_id: str) -> list[dict[str, Any]]:
     collections = _collections()
     if collections is None:
         return _local_result(lambda: _local_store.list_conversations(user_id))
-    profiles, conversations, _ = collections
+    profiles, conversations, messages = collections
     try:
         documents = conversations.find({"participant_ids": user_id}).sort("updated_at", -1).limit(50)
         result = []
         for document in documents:
+            _purge_expired_messages(conversations, messages, str(document.get("conversation_id", "")))
+            refreshed = conversations.find_one({"conversation_id": document.get("conversation_id")})
+            if refreshed:
+                document = refreshed
             participant_ids = [str(value) for value in document.get("participant_ids", [])]
             recipient_id = next((value for value in participant_ids if value != user_id), "")
             recipient = profiles.find_one({"user_id": recipient_id}) or {
@@ -267,17 +330,9 @@ def get_messages(user_id: str, conversation_id: str, limit: int = 80) -> list[di
         if not conversation:
             raise DirectMessageError("That conversation no longer exists.")
         _find_participant(conversation, user_id)
+        _purge_expired_messages(conversations, messages, conversation_id)
         documents = messages.find({"conversation_id": conversation_id}).sort("created_at", 1).limit(limit)
-        return [
-            {
-                "message_id": str(document.get("message_id", document.get("_id", ""))),
-                "sender_id": str(document.get("sender_id", "")),
-                "content": str(document.get("content", "")),
-                "created_at": _iso(document.get("created_at")),
-                "is_from_me": str(document.get("sender_id", "")) == user_id,
-            }
-            for document in documents
-        ]
+        return [_message_response(document, user_id) for document in documents]
     except DirectMessageError:
         raise
     except PyMongoError:
@@ -313,6 +368,7 @@ def send_message(
         if not conversation:
             raise DirectMessageError("That conversation no longer exists.")
         _find_participant(conversation, user_id)
+        _purge_expired_messages(conversations, messages, conversation_id)
         if client_message_id:
             existing = messages.find_one(
                 {
@@ -321,20 +377,26 @@ def send_message(
                 }
             )
             if existing:
-                return {
-                    "message_id": str(existing.get("message_id", existing.get("_id", ""))),
-                    "sender_id": str(existing.get("sender_id", "")),
-                    "content": str(existing.get("content", "")),
-                    "created_at": _iso(existing.get("created_at")),
-                    "is_from_me": str(existing.get("sender_id", "")) == user_id,
-                }
+                return _message_response(existing, user_id)
         now = datetime.now(UTC)
+        expiry = None
+        if bool(conversation.get("disappearing_enabled", False)):
+            legacy_hours = int(conversation.get("disappearing_hours", 6))
+            seconds = max(
+                MIN_DISAPPEARING_SECONDS,
+                int(conversation.get("disappearing_seconds", legacy_hours * 60 * 60)),
+            )
+            try:
+                expiry = now + timedelta(seconds=seconds)
+            except OverflowError:
+                expiry = datetime.max.replace(tzinfo=UTC)
         document = {
             "message_id": uuid.uuid4().hex,
             "conversation_id": conversation_id,
             "sender_id": user_id,
             "content": clean_content,
             "created_at": now,
+            "expires_at": expiry,
         }
         if client_message_id:
             document["client_message_id"] = client_message_id
@@ -343,13 +405,7 @@ def send_message(
             {"conversation_id": conversation_id},
             {"$set": {"last_message": clean_content, "last_sender_id": user_id, "updated_at": now}},
         )
-        return {
-            "message_id": document["message_id"],
-            "sender_id": user_id,
-            "content": clean_content,
-            "created_at": _iso(now),
-            "is_from_me": True,
-        }
+        return _message_response(document, user_id)
     except DirectMessageError:
         raise
     except PyMongoError as error:
@@ -362,13 +418,7 @@ def send_message(
                 }
             )
             if existing:
-                return {
-                    "message_id": str(existing.get("message_id", existing.get("_id", ""))),
-                    "sender_id": str(existing.get("sender_id", "")),
-                    "content": str(existing.get("content", "")),
-                    "created_at": _iso(existing.get("created_at")),
-                    "is_from_me": str(existing.get("sender_id", "")) == user_id,
-                }
+                return _message_response(existing, user_id)
         return _local_result(
             lambda: _local_store.send_message(
                 user_id,
@@ -377,3 +427,94 @@ def send_message(
                 client_message_id,
             )
         )
+
+
+def update_conversation_settings(
+    user_id: str,
+    conversation_id: str,
+    enabled: bool,
+    seconds: int,
+) -> dict[str, Any]:
+    validated_seconds = validate_disappearing_seconds(seconds)
+    collections = _collections()
+    if collections is None:
+        return _local_result(
+            lambda: _local_store.update_settings(user_id, conversation_id, enabled, validated_seconds)
+        )
+
+    _, conversations, _ = collections
+    try:
+        conversation = conversations.find_one({"conversation_id": conversation_id})
+        if not conversation:
+            raise DirectMessageError("That conversation no longer exists.")
+        _find_participant(conversation, user_id)
+        conversations.update_one(
+            {"conversation_id": conversation_id},
+            {
+                "$set": {
+                    "disappearing_enabled": bool(enabled),
+                    # Keep the old field populated for documents or clients
+                    # created before timer values moved from hours to seconds.
+                    "disappearing_hours": max(1, (validated_seconds + 3599) // 3600),
+                    "disappearing_seconds": validated_seconds,
+                }
+            },
+        )
+        return {
+            "conversation_id": conversation_id,
+            "disappearing_enabled": bool(enabled),
+            "disappearing_seconds": validated_seconds,
+        }
+    except DirectMessageError:
+        raise
+    except PyMongoError:
+        mark_mongo_unavailable()
+        return _local_result(
+            lambda: _local_store.update_settings(user_id, conversation_id, enabled, validated_seconds)
+        )
+
+
+def delete_messages(user_id: str, conversation_id: str, message_ids: list[str]) -> dict[str, Any]:
+    unique_ids = list(dict.fromkeys(str(message_id) for message_id in message_ids if str(message_id)))
+    if not unique_ids:
+        return {"conversation_id": conversation_id, "deleted_message_ids": []}
+
+    collections = _collections()
+    if collections is None:
+        return _local_result(lambda: _local_store.delete_messages(user_id, conversation_id, unique_ids))
+
+    _, conversations, messages = collections
+    try:
+        conversation = conversations.find_one({"conversation_id": conversation_id})
+        if not conversation:
+            raise DirectMessageError("That conversation no longer exists.")
+        _find_participant(conversation, user_id)
+        _purge_expired_messages(conversations, messages, conversation_id)
+        existing_ids = {
+            str(document.get("message_id", document.get("_id", "")))
+            for document in messages.find({"conversation_id": conversation_id})
+        }
+        deletable_ids = [message_id for message_id in unique_ids if message_id in existing_ids]
+        if deletable_ids:
+            messages.delete_many(
+                {"conversation_id": conversation_id, "message_id": {"$in": deletable_ids}}
+            )
+            _purge_expired_messages(conversations, messages, conversation_id)
+            latest_cursor = messages.find({"conversation_id": conversation_id}).sort("created_at", -1).limit(1)
+            latest = next(iter(latest_cursor), None)
+            conversations.update_one(
+                {"conversation_id": conversation_id},
+                {
+                    "$set": {
+                        "last_message": str(latest.get("content", "")) if latest else "",
+                        "last_sender_id": str(latest.get("sender_id", "")) if latest else "",
+                        "updated_at": datetime.now(UTC),
+                    }
+                },
+            )
+        return {"conversation_id": conversation_id, "deleted_message_ids": deletable_ids}
+    except DirectMessageError:
+        raise
+    except PyMongoError:
+        mark_mongo_unavailable()
+        return _local_result(lambda: _local_store.delete_messages(user_id, conversation_id, unique_ids))

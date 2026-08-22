@@ -11,12 +11,15 @@ import sqlite3
 import uuid
 import re
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "data" / "direct_messages.sqlite3"
+DEFAULT_DISAPPEARING_HOURS = 6
+DEFAULT_DISAPPEARING_SECONDS = DEFAULT_DISAPPEARING_HOURS * 60 * 60
+MIN_DISAPPEARING_SECONDS = 10
 
 
 class LocalDirectMessageStoreError(RuntimeError):
@@ -90,6 +93,9 @@ class LocalDirectMessageStore:
                 updated_at TEXT NOT NULL,
                 last_message TEXT NOT NULL DEFAULT '',
                 last_sender_id TEXT NOT NULL DEFAULT '',
+                disappearing_enabled INTEGER NOT NULL DEFAULT 0,
+                disappearing_hours INTEGER NOT NULL DEFAULT 6,
+                disappearing_seconds INTEGER NOT NULL DEFAULT 21600,
                 UNIQUE(participant_a, participant_b)
             );
 
@@ -99,6 +105,7 @@ class LocalDirectMessageStore:
                 sender_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                expires_at TEXT,
                 FOREIGN KEY(conversation_id) REFERENCES dm_conversations(conversation_id)
                     ON DELETE CASCADE
             );
@@ -113,10 +120,35 @@ class LocalDirectMessageStore:
                 ON dm_messages(conversation_id, created_at);
             """
         )
+        conversation_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(dm_conversations)").fetchall()
+        }
+        if "disappearing_enabled" not in conversation_columns:
+            connection.execute(
+                "ALTER TABLE dm_conversations ADD COLUMN disappearing_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+        if "disappearing_hours" not in conversation_columns:
+            connection.execute(
+                "ALTER TABLE dm_conversations ADD COLUMN disappearing_hours INTEGER NOT NULL DEFAULT 6"
+            )
+        if "disappearing_seconds" not in conversation_columns:
+            connection.execute(
+                "ALTER TABLE dm_conversations ADD COLUMN disappearing_seconds INTEGER NOT NULL DEFAULT 21600"
+            )
+            connection.execute(
+                """
+                UPDATE dm_conversations
+                SET disappearing_seconds = disappearing_hours * 3600
+                WHERE disappearing_hours != 6
+                """
+            )
         columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(dm_messages)").fetchall()
         }
+        if "expires_at" not in columns:
+            connection.execute("ALTER TABLE dm_messages ADD COLUMN expires_at TEXT")
         if "client_message_id" not in columns:
             connection.execute("ALTER TABLE dm_messages ADD COLUMN client_message_id TEXT")
         connection.execute(
@@ -190,6 +222,8 @@ class LocalDirectMessageStore:
     @staticmethod
     def _conversation(row: sqlite3.Row, recipient: dict[str, Any], current_user_id: str) -> dict[str, Any]:
         last_sender_id = str(_value(row, "last_sender_id"))
+        legacy_hours = int(_value(row, "disappearing_hours", DEFAULT_DISAPPEARING_HOURS))
+        seconds = int(_value(row, "disappearing_seconds", legacy_hours * 60 * 60))
         return {
             "conversation_id": str(row["conversation_id"]),
             "recipient": recipient,
@@ -197,7 +231,57 @@ class LocalDirectMessageStore:
             "last_sender_id": last_sender_id,
             "updated_at": str(_value(row, "updated_at")),
             "is_last_message_from_me": last_sender_id == current_user_id,
+            "disappearing_enabled": bool(_value(row, "disappearing_enabled", 0)),
+            "disappearing_seconds": seconds,
         }
+
+    @staticmethod
+    def _purge_expired(connection: sqlite3.Connection, conversation_id: str) -> None:
+        now = _now()
+        deleted = connection.execute(
+            """
+            DELETE FROM dm_messages
+            WHERE conversation_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+            """,
+            (conversation_id, now),
+        ).rowcount
+        if not deleted:
+            return
+        latest = connection.execute(
+            """
+            SELECT content, sender_id
+            FROM dm_messages WHERE conversation_id = ?
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        connection.execute(
+            """
+            UPDATE dm_conversations
+            SET last_message = ?, last_sender_id = ?, updated_at = ?
+            WHERE conversation_id = ?
+            """,
+            (
+                str(latest["content"]) if latest else "",
+                str(latest["sender_id"]) if latest else "",
+                now,
+                conversation_id,
+            ),
+        )
+
+    @staticmethod
+    def _expiry_for(conversation: sqlite3.Row, now: datetime) -> str | None:
+        if not bool(_value(conversation, "disappearing_enabled", 0)):
+            return None
+        legacy_hours = int(_value(conversation, "disappearing_hours", DEFAULT_DISAPPEARING_HOURS))
+        seconds = max(
+            MIN_DISAPPEARING_SECONDS,
+            int(_value(conversation, "disappearing_seconds", legacy_hours * 60 * 60)),
+        )
+        try:
+            return (now + timedelta(seconds=seconds)).isoformat()
+        except OverflowError:
+            return datetime.max.replace(tzinfo=UTC).isoformat()
 
     def create_conversation(self, user_id: str, recipient_username: str) -> dict[str, Any]:
         normalized_username = recipient_username.strip().casefold()
@@ -216,7 +300,8 @@ class LocalDirectMessageStore:
             participant_a, participant_b = sorted((user_id, target_id))
             row = connection.execute(
                 """
-                SELECT conversation_id, last_message, last_sender_id, updated_at
+                SELECT conversation_id, last_message, last_sender_id, updated_at,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
                 FROM dm_conversations
                 WHERE participant_a = ? AND participant_b = ?
                 """,
@@ -230,14 +315,16 @@ class LocalDirectMessageStore:
             connection.execute(
                 """
                 INSERT INTO dm_conversations
-                    (conversation_id, participant_a, participant_b, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (conversation_id, participant_a, participant_b, created_at, updated_at,
+                     disappearing_enabled, disappearing_hours, disappearing_seconds)
+                VALUES (?, ?, ?, ?, ?, 0, 6, 21600)
                 """,
                 (conversation_id, participant_a, participant_b, now, now),
             )
             row = connection.execute(
                 """
-                SELECT conversation_id, last_message, last_sender_id, updated_at
+                SELECT conversation_id, last_message, last_sender_id, updated_at,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
                 FROM dm_conversations WHERE conversation_id = ?
                 """,
                 (conversation_id,),
@@ -248,7 +335,8 @@ class LocalDirectMessageStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT conversation_id, participant_a, participant_b, last_message, last_sender_id, updated_at
+                SELECT conversation_id, participant_a, participant_b, last_message, last_sender_id, updated_at,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
                 FROM dm_conversations
                 WHERE participant_a = ? OR participant_b = ?
                 ORDER BY updated_at DESC
@@ -258,6 +346,15 @@ class LocalDirectMessageStore:
             ).fetchall()
             result = []
             for row in rows:
+                self._purge_expired(connection, str(row["conversation_id"]))
+                row = connection.execute(
+                    """
+                    SELECT conversation_id, participant_a, participant_b, last_message, last_sender_id, updated_at,
+                           disappearing_enabled, disappearing_hours, disappearing_seconds
+                    FROM dm_conversations WHERE conversation_id = ?
+                    """,
+                    (row["conversation_id"],),
+                ).fetchone()
                 recipient_id = row["participant_b"] if row["participant_a"] == user_id else row["participant_a"]
                 recipient_row = connection.execute(
                     "SELECT user_id, username, display_name FROM dm_profiles WHERE user_id = ?",
@@ -275,7 +372,8 @@ class LocalDirectMessageStore:
         with self._connect() as connection:
             conversation = connection.execute(
                 """
-                SELECT conversation_id, participant_a, participant_b
+                SELECT conversation_id, participant_a, participant_b,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
                 FROM dm_conversations WHERE conversation_id = ?
                 """,
                 (conversation_id,),
@@ -284,9 +382,10 @@ class LocalDirectMessageStore:
                 raise LocalDirectMessageStoreError("That conversation no longer exists.")
             if user_id not in {conversation["participant_a"], conversation["participant_b"]}:
                 raise LocalDirectMessageStoreError("You do not have access to this conversation.")
+            self._purge_expired(connection, conversation_id)
             rows = connection.execute(
                 """
-                SELECT message_id, sender_id, content, created_at
+                SELECT message_id, sender_id, content, created_at, expires_at
                 FROM dm_messages WHERE conversation_id = ?
                 ORDER BY created_at ASC LIMIT ?
                 """,
@@ -298,6 +397,7 @@ class LocalDirectMessageStore:
                     "sender_id": str(row["sender_id"]),
                     "content": str(row["content"]),
                     "created_at": str(row["created_at"]),
+                    "expires_at": str(row["expires_at"]) if row["expires_at"] else None,
                     "is_from_me": str(row["sender_id"]) == user_id,
                 }
                 for row in rows
@@ -313,7 +413,8 @@ class LocalDirectMessageStore:
         with self._connect() as connection:
             conversation = connection.execute(
                 """
-                SELECT conversation_id, participant_a, participant_b
+                SELECT conversation_id, participant_a, participant_b,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
                 FROM dm_conversations WHERE conversation_id = ?
                 """,
                 (conversation_id,),
@@ -322,11 +423,12 @@ class LocalDirectMessageStore:
                 raise LocalDirectMessageStoreError("That conversation no longer exists.")
             if user_id not in {conversation["participant_a"], conversation["participant_b"]}:
                 raise LocalDirectMessageStoreError("You do not have access to this conversation.")
+            self._purge_expired(connection, conversation_id)
 
             if client_message_id:
                 existing = connection.execute(
                     """
-                    SELECT message_id, sender_id, content, created_at
+                    SELECT message_id, sender_id, content, created_at, expires_at
                     FROM dm_messages
                     WHERE conversation_id = ? AND client_message_id = ?
                     """,
@@ -338,18 +440,20 @@ class LocalDirectMessageStore:
                         "sender_id": str(existing["sender_id"]),
                         "content": str(existing["content"]),
                         "created_at": str(existing["created_at"]),
+                        "expires_at": str(existing["expires_at"]) if existing["expires_at"] else None,
                         "is_from_me": str(existing["sender_id"]) == user_id,
                     }
 
             now = _now()
+            expiry = self._expiry_for(conversation, datetime.now(UTC))
             message_id = uuid.uuid4().hex
             connection.execute(
                 """
                 INSERT INTO dm_messages
-                    (message_id, conversation_id, sender_id, content, created_at, client_message_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (message_id, conversation_id, sender_id, content, created_at, expires_at, client_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (message_id, conversation_id, user_id, content, now, client_message_id),
+                (message_id, conversation_id, user_id, content, now, expiry, client_message_id),
             )
             connection.execute(
                 """
@@ -364,5 +468,70 @@ class LocalDirectMessageStore:
                 "sender_id": user_id,
                 "content": content,
                 "created_at": now,
+                "expires_at": expiry,
                 "is_from_me": True,
             }
+
+    def update_settings(self, user_id: str, conversation_id: str, enabled: bool, seconds: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            conversation = connection.execute(
+                """
+                SELECT conversation_id, participant_a, participant_b,
+                       disappearing_enabled, disappearing_hours, disappearing_seconds
+                FROM dm_conversations WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            if not conversation:
+                raise LocalDirectMessageStoreError("That conversation no longer exists.")
+            if user_id not in {conversation["participant_a"], conversation["participant_b"]}:
+                raise LocalDirectMessageStoreError("You do not have access to this conversation.")
+            connection.execute(
+                """
+                UPDATE dm_conversations
+                SET disappearing_enabled = ?, disappearing_hours = ?, disappearing_seconds = ?
+                WHERE conversation_id = ?
+                """,
+                (1 if enabled else 0, max(1, (seconds + 3599) // 3600), seconds, conversation_id),
+            )
+            return {
+                "conversation_id": conversation_id,
+                "disappearing_enabled": enabled,
+                "disappearing_seconds": seconds,
+            }
+
+    def delete_messages(self, user_id: str, conversation_id: str, message_ids: list[str]) -> dict[str, Any]:
+        with self._connect() as connection:
+            conversation = connection.execute(
+                "SELECT conversation_id, participant_a, participant_b FROM dm_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if not conversation:
+                raise LocalDirectMessageStoreError("That conversation no longer exists.")
+            if user_id not in {conversation["participant_a"], conversation["participant_b"]}:
+                raise LocalDirectMessageStoreError("You do not have access to this conversation.")
+            self._purge_expired(connection, conversation_id)
+            unique_ids = list(dict.fromkeys(message_ids))
+            if not unique_ids:
+                return {"conversation_id": conversation_id, "deleted_message_ids": []}
+            placeholders = ", ".join("?" for _ in unique_ids)
+            rows = connection.execute(
+                f"SELECT message_id FROM dm_messages WHERE conversation_id = ? AND message_id IN ({placeholders})",
+                [conversation_id, *unique_ids],
+            ).fetchall()
+            deleted_ids = [str(row["message_id"]) for row in rows]
+            if deleted_ids:
+                connection.execute(
+                    f"DELETE FROM dm_messages WHERE conversation_id = ? AND message_id IN ({placeholders})",
+                    [conversation_id, *deleted_ids],
+                )
+                self._purge_expired(connection, conversation_id)
+                latest = connection.execute(
+                    "SELECT content, sender_id FROM dm_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (conversation_id,),
+                ).fetchone()
+                connection.execute(
+                    "UPDATE dm_conversations SET last_message = ?, last_sender_id = ?, updated_at = ? WHERE conversation_id = ?",
+                    (str(latest["content"]) if latest else "", str(latest["sender_id"]) if latest else "", _now(), conversation_id),
+                )
+            return {"conversation_id": conversation_id, "deleted_message_ids": deleted_ids}

@@ -36,6 +36,8 @@ type ContextTurn = {
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8123";
+const COMPANION_SESSION_KEY = "aegis.companion.session.v1";
+const COMPANION_MEMORY_KEY = "aegis.companion.memory-consent.v1";
 
 const starterMessage: ChatMessage = {
   id: "welcome",
@@ -52,6 +54,33 @@ function createSessionId() {
     return crypto.randomUUID();
   }
   return `aegis-${newMessageId()}`;
+}
+
+function readSessionValue(key: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionValue(key: string, value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // Storage can be unavailable in private browsing; the in-memory flow still works.
+  }
+}
+
+function removeSessionValue(key: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // Storage can be unavailable in private browsing; the in-memory flow still works.
+  }
 }
 
 function buildVoiceContext(messages: ChatMessage[]) {
@@ -99,6 +128,16 @@ export default function CompanionFlow({ onBack }: CompanionFlowProps) {
   const messageList = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const storedSessionId = readSessionValue(COMPANION_SESSION_KEY);
+    const storedConsent = readSessionValue(COMPANION_MEMORY_KEY);
+    if (storedSessionId) sessionId.current = storedSessionId;
+    if (storedConsent === "true") {
+      const restoreConsent = window.setTimeout(() => setMemoryConsent(true), 0);
+      return () => window.clearTimeout(restoreConsent);
+    }
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     };
@@ -134,7 +173,10 @@ export default function CompanionFlow({ onBack }: CompanionFlowProps) {
     const cleanedDraft = draft.trim();
     if (!cleanedDraft || isSending) return;
 
-    if (!sessionId.current) sessionId.current = createSessionId();
+    if (!sessionId.current) {
+      sessionId.current = createSessionId();
+      writeSessionValue(COMPANION_SESSION_KEY, sessionId.current);
+    }
     setError(null);
     setNotice(null);
     setUrgentMessage(null);
@@ -177,7 +219,7 @@ export default function CompanionFlow({ onBack }: CompanionFlowProps) {
         setNotice(
           companionResponse.memory_store === "mongo"
             ? "Memory is on. Recent turns are saved only to keep this conversation coherent."
-            : "Memory is on for this session and will clear when the backend restarts.",
+            : "Memory is on. Recent turns are stored locally on this computer while MongoDB is unavailable.",
         );
       }
     } catch (requestError) {
@@ -205,6 +247,9 @@ export default function CompanionFlow({ onBack }: CompanionFlowProps) {
       });
       if (!response.ok) throw new Error("Aegis could not clear the saved memory.");
       setMemoryConsent(false);
+      removeSessionValue(COMPANION_MEMORY_KEY);
+      removeSessionValue(COMPANION_SESSION_KEY);
+      sessionId.current = "";
       setNotice("Saved companion memory was cleared.");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Aegis could not clear saved memory.");
@@ -379,7 +424,11 @@ export default function CompanionFlow({ onBack }: CompanionFlowProps) {
           <input
             type="checkbox"
             checked={memoryConsent}
-            onChange={(event) => setMemoryConsent(event.target.checked)}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setMemoryConsent(checked);
+              writeSessionValue(COMPANION_MEMORY_KEY, String(checked));
+            }}
           />
           <span className="memory-toggle-track" aria-hidden="true"><span /></span>
           <span>

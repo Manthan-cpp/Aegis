@@ -1,5 +1,7 @@
 import copy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -47,6 +49,12 @@ class FakeCollection:
 
                 if not re.search(expected["$regex"], str(actual or "")):
                     return False
+            elif isinstance(expected, dict) and "$in" in expected:
+                if actual not in expected["$in"]:
+                    return False
+            elif isinstance(expected, dict) and "$lte" in expected:
+                if actual is None or actual > expected["$lte"]:
+                    return False
             elif isinstance(actual, list) and not isinstance(expected, list):
                 if expected not in actual:
                     return False
@@ -59,6 +67,11 @@ class FakeCollection:
 
     def find(self, filters):
         return FakeCursor([item for item in self.documents if self.matches(item, filters)])
+
+    def delete_many(self, filters):
+        matching = [item for item in self.documents if self.matches(item, filters)]
+        self.documents = [item for item in self.documents if not self.matches(item, filters)]
+        return type("DeleteResult", (), {"deleted_count": len(matching)})()
 
     def update_one(self, filters, update, upsert=False):
         document = next((item for item in self.documents if self.matches(item, filters)), None)
@@ -244,6 +257,92 @@ class DirectMessageApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertEqual(first.json()["message_id"], second.json()["message_id"])
         self.assertEqual(len(messages.json()), 1)
+
+    def test_disappearing_messages_and_manual_delete_work_in_local_store(self):
+        current_user = {"value": CurrentUser("user_admin", "Admin")}
+        app.dependency_overrides[get_current_user] = lambda: current_user["value"]
+
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "direct_messages.sqlite3"
+            local_store = LocalDirectMessageStore(database_path)
+            with patch("services.direct_messages.mongo_database", return_value=None), patch(
+                "services.direct_messages._local_store", local_store
+            ), TestClient(app) as client:
+                client.post("/dm/profile", json={"username": "Admin"})
+                current_user["value"] = CurrentUser("user_test_a", "testA")
+                client.post("/dm/profile", json={"username": "testA"})
+                current_user["value"] = CurrentUser("user_admin", "Admin")
+                conversation = client.post("/dm/conversations", json={"username": "testA"})
+                conversation_id = conversation.json()["conversation_id"]
+                settings = client.patch(
+                    f"/dm/conversations/{conversation_id}/settings",
+                    json={"enabled": True, "seconds": 21_600},
+                )
+                sent = client.post(
+                    f"/dm/conversations/{conversation_id}/messages",
+                    json={"content": "This will disappear", "client_message_id": "disappear-001"},
+                )
+                deleted = client.request(
+                    "DELETE",
+                    f"/dm/conversations/{conversation_id}/messages",
+                    json={"message_ids": [sent.json()["message_id"]]},
+                )
+
+                self.assertEqual(settings.status_code, 200)
+                self.assertTrue(settings.json()["disappearing_enabled"])
+                self.assertEqual(settings.json()["disappearing_seconds"], 21_600)
+                self.assertIsNotNone(sent.json()["expires_at"])
+                self.assertEqual(deleted.status_code, 200)
+                self.assertEqual(deleted.json()["deleted_message_ids"], [sent.json()["message_id"]])
+                self.assertEqual(client.get(f"/dm/conversations/{conversation_id}/messages").json(), [])
+
+                current_user["value"] = CurrentUser("user_test_a", "testA")
+                old_sent = client.post(
+                    f"/dm/conversations/{conversation_id}/messages",
+                    json={"content": "Expired on the server", "client_message_id": "disappear-002"},
+                )
+                connection = sqlite3.connect(database_path)
+                try:
+                    connection.execute(
+                        "UPDATE dm_messages SET expires_at = ? WHERE message_id = ?",
+                        ((datetime.now(UTC) - timedelta(minutes=1)).isoformat(), old_sent.json()["message_id"]),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                self.assertEqual(client.get(f"/dm/conversations/{conversation_id}/messages").json(), [])
+
+    def test_disappearing_settings_and_delete_work_in_mongo_path(self):
+        database = FakeDatabase()
+        current_user = {"value": CurrentUser("user_admin", "Admin")}
+        app.dependency_overrides[get_current_user] = lambda: current_user["value"]
+
+        with patch("services.direct_messages.mongo_database", return_value=database), TestClient(app) as client:
+            client.post("/dm/profile", json={"username": "Admin"})
+            current_user["value"] = CurrentUser("user_test_a", "testA")
+            client.post("/dm/profile", json={"username": "testA"})
+            current_user["value"] = CurrentUser("user_admin", "Admin")
+            conversation = client.post("/dm/conversations", json={"username": "testA"})
+            conversation_id = conversation.json()["conversation_id"]
+            settings = client.patch(
+                f"/dm/conversations/{conversation_id}/settings",
+                json={"enabled": True, "seconds": 36_000},
+            )
+            sent = client.post(
+                f"/dm/conversations/{conversation_id}/messages",
+                json={"content": "Mongo disappearing message", "client_message_id": "disappear-003"},
+            )
+            deleted = client.request(
+                "DELETE",
+                f"/dm/conversations/{conversation_id}/messages",
+                json={"message_ids": [sent.json()["message_id"]]},
+            )
+
+        self.assertEqual(settings.status_code, 200)
+        self.assertEqual(settings.json()["disappearing_seconds"], 36_000)
+        self.assertIsNotNone(sent.json()["expires_at"])
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json()["deleted_message_ids"], [sent.json()["message_id"]])
 
     def test_search_accepts_display_style_username_with_spaces(self):
         current_user = {"value": CurrentUser("user_admin", "Admin")}

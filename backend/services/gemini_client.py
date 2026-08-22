@@ -13,7 +13,12 @@ from google.genai import types
 # through Gemini-only backups before the chatbot services fall back to Groq or
 # Ollama.
 DEFAULT_MODEL = "gemini-3.5-flash"
-GEMINI_BACKUP_MODELS = ("gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite")
+GEMINI_BACKUP_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+)
 DEFAULT_TIMEOUT_MS = 15_000
 
 

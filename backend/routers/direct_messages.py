@@ -9,12 +9,15 @@ from pydantic import BaseModel, Field
 from services.auth import CurrentUser, get_current_user, verify_session_token
 from services.direct_messages import (
     DirectMessageError,
+    InvalidDisappearingSettings,
     create_conversation,
+    delete_messages,
     get_messages,
     list_conversations,
     search_profiles,
     send_message,
     sync_profile,
+    update_conversation_settings,
 )
 from services.dm_realtime import publish, subscribe, unsubscribe
 
@@ -36,9 +39,20 @@ class MessageRequest(BaseModel):
     client_message_id: str | None = Field(default=None, min_length=8, max_length=100)
 
 
+class ConversationSettingsRequest(BaseModel):
+    enabled: bool
+    seconds: int = Field(default=21_600, ge=10)
+
+
+class DeleteMessagesRequest(BaseModel):
+    message_ids: list[str] = Field(min_length=1, max_length=80)
+
+
 def _run(action):
     try:
         return action()
+    except InvalidDisappearingSettings as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     except DirectMessageError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 
@@ -69,6 +83,43 @@ def start_conversation(payload: ConversationRequest, user: CurrentUser = Depends
 @router.get("/conversations/{conversation_id}/messages")
 def conversation_messages(conversation_id: str, user: CurrentUser = Depends(get_current_user)) -> list[dict[str, Any]]:
     return _run(lambda: get_messages(user.user_id, conversation_id))
+
+
+@router.patch("/conversations/{conversation_id}/settings")
+def conversation_settings(
+    conversation_id: str,
+    payload: ConversationSettingsRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    settings = _run(
+        lambda: update_conversation_settings(
+            user.user_id,
+            conversation_id,
+            payload.enabled,
+            payload.seconds,
+        )
+    )
+    publish(conversation_id, {"type": "settings", "conversation_id": conversation_id, "settings": settings})
+    return settings
+
+
+@router.delete("/conversations/{conversation_id}/messages")
+def remove_messages(
+    conversation_id: str,
+    payload: DeleteMessagesRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    deleted = _run(lambda: delete_messages(user.user_id, conversation_id, payload.message_ids))
+    if deleted["deleted_message_ids"]:
+        publish(
+            conversation_id,
+            {
+                "type": "messages_deleted",
+                "conversation_id": conversation_id,
+                "deleted_message_ids": deleted["deleted_message_ids"],
+            },
+        )
+    return deleted
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
