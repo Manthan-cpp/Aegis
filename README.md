@@ -12,7 +12,7 @@ When the world feels unsafe, reaching out for help shouldn't put a woman in more
 
 Aegis is a private, zero-cost safety toolkit disguised as a simple, functioning calculator on her device. Behind this unassuming facade lies a powerful suite of support tools tailored for women. By entering a secret PIN, the calculator transforms into a secure space where she can access discreet SOS communication, emotional support, legal guidance, and female-focused health information. Aegis is built on a privacy-first, offline-resilient architecture that ensures a woman can choose the safest next step without leaving a trace.
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/31da278e-12fe-46f1-b81c-5053fd4ffda4" alt="Aegis Home Page" width="800">
+  <img src="https://github.com/user-attachments/assets/503e1d9c-2e78-42ae-8fdf-fbae10f5a19d" alt="Aegis Home Page" width="800">
 </div>
 ---
 
