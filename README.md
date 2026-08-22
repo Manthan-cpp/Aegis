@@ -1,221 +1,112 @@
 # Aegis
 
-## A discreet safety and support companion
+<div align="center">
+  <img src="home_page.png" alt="Aegis Home Page" width="800">
+</div>
 
-Aegis is a private safety toolkit for people facing abuse, isolation,
-monitoring, harassment, or an unsafe situation. It combines emotional support,
-legal information, health guidance, discreet SOS communication, trusted-contact
-calling, email alerts, and private messaging in one calm application.
+**A stealth safety and support companion designed to protect.**
 
-Aegis is designed to help a person choose the safest available next step. It is
-not a replacement for emergency services, a doctor, a lawyer, or a trained
-responder.
+---
 
-## Problem statement
+## 🚨 The Problem
 
-People in unsafe situations may not be able to openly search for help or make a
-visible call. Support is also fragmented: emotional help, legal information,
-health guidance, communication, and emergency support usually exist in separate
-places.
+When the world feels unsafe, reaching out for help shouldn't put you in more danger. For individuals facing abuse, monitoring, or isolation, openly searching for assistance or making a visible distress call is often impossible. Furthermore, critical support—whether emotional guidance, legal information, or emergency contact—is fragmented across different platforms, making it hard to access in high-stress, low-bandwidth, or strictly monitored environments.
 
-Aegis addresses this by providing discreet access to multiple forms of support
-through one privacy-focused interface. The product is designed for stressful,
-low-bandwidth, monitored, or resource-limited situations.
+## 🛡️ The Solution: Aegis
 
-## How we evaluate the solution
+Aegis is a private, zero-cost safety toolkit disguised as a simple, functioning calculator on your device. Behind this unassuming facade lies a powerful suite of support tools. By entering a secret PIN, the calculator transforms into a secure space where users can access discreet SOS communication, emotional support, legal guidance, and health information. Aegis is built on a privacy-first, offline-resilient architecture that ensures a person can choose the safest next step without leaving a trace.
 
-The project is evaluated through realistic user scenarios:
+---
 
-- Can a user access help discreetly and exit quickly?
-- Does the companion respond naturally and follow the latest message?
-- Does the legal assistant provide relevant, cited Indian legal sources?
-- Does the health assistant answer intimate questions clearly and without shame?
-- Can an SOS message reach a trusted person through more than one channel?
-- Are messages and queued emails preserved after refresh or temporary failure?
-- Does the interface remain understandable and responsive under stress?
+## ✨ Features
 
-The goal is not only to generate an answer. Each response must be relevant,
-clear, honest about its limitations, and appropriate to the user’s situation.
+Aegis is packed with features designed specifically for stealth and safety:
 
-## Key features
+### 1. 🧮 Stealth Calculator Disguise
+The application initially opens as a fully functional calculator. Only by entering a specific, configured unlock code (e.g., `2580`) and pressing `=` does the real Aegis toolkit reveal itself. A quick tap of `Escape` or the "Quick Exit" button immediately reverts the app back to the calculator, clearing all session data instantly.
 
-### Discreet calculator entry
+### 2. 🖼️ Discreet SOS via Steganography
+Send an SOS without anyone knowing. Users can type a short distress phrase and select an ordinary cover theme (like a flower or sunset). Aegis uses AI to expand the phrase into a full distress message and hides it invisibly inside a generated cover image using lossless LSB steganography. This innocent-looking image can then be shared directly with trusted contacts.
 
-The application opens as a working calculator. Enter the configured unlock code
-(`2580` in the local setup) and press `=` to reveal the private Aegis toolkit.
-Quick Exit or `Escape` immediately returns to the calculator.
+### 3. 💬 AI Companion (Emotional Support)
+A warm, always-available AI chatbot that provides emotional support, grounding techniques, and coping strategies. It adapts contextually to your messages, supports voice read-aloud via browser TTS, and actively avoids giving inappropriate medical or legal advice. If urgent language is detected, it gently surfaces real crisis resources.
 
-### Discreet SOS image
+### 4. ⚖️ India-Scoped Legal Rights RAG Bot
+Navigate your legal rights with confidence. A specialized chatbot grounded in a curated corpus of Indian Domestic Violence laws (PWDVA, BNS, etc.). Instead of guessing, it retrieves relevant passages using Vector Search and provides cited, accurate answers to legal queries.
 
-The user enters a short situation and selects an ordinary cover such as a flower,
-landscape, food, coffee, or sunset. Aegis creates a clear message and hides it
-inside a normal-looking PNG using lossless LSB steganography.
+### 5. 🩺 Health Assistant
+Get direct, judgment-free answers to intimate health questions concerning symptoms, sexual health, periods, contraception, and more, while clearly highlighting warning signs that require professional medical attention.
 
-The image can be saved or shared through the phone’s native share sheet. A
-responder can upload the exact PNG to decode the hidden message. A custom text
-message can also be shared.
+### 6. 🚨 Responder Dashboard
+A dedicated workspace for trusted contacts or NGOs. Responders can upload a received SOS cover image to instantly decode the hidden distress message, view AI-assigned severity scores, and manage cases in order of urgency.
 
-### AI Companion
+### 7. 📞 Trusted-Contact Voice Bridge & Email Queue
+If direct communication is unsafe, Aegis can relay a live voice explanation to a trusted contact or queue help emails locally. If the internet drops, requests are saved and automatically retried once connectivity returns.
 
-A warm, natural emotional-support chatbot for ordinary conversation, loneliness,
-creative requests, grounding, and difficult moments. It adapts to the latest
-message instead of repeating a fixed emergency script. Optional browser
-read-aloud and live voice conversation are also available.
+### 8. 🔒 Private Direct Messaging
+Secure, one-to-one messaging between authenticated users with offline-resilient history and realtime WebSocket updates.
 
-### India-scoped Legal Rights Bot
+---
 
-The legal assistant retrieves relevant passages from a curated India-focused
-corpus, including the Domestic Violence Act, BNS, BNSS, BSA, POCSO, POSH,
-Dowry Prohibition Act, and legal-aid sources. Answers include sections and source
-links rather than unsupported legal claims.
+## 🛠️ Tech Stack
 
-### Health Assistant
+Aegis is built on a modern, **zero-cost** architecture to ensure it remains accessible to everyone.
 
-Provides direct, judgment-free information about symptoms, sexual health,
-periods, contraception, pregnancy, consent, and other adult health questions.
-It also highlights warning signs that require professional medical attention.
+**Frontend:**
+- **Framework:** Next.js 16 (App Router)
+- **Language:** TypeScript & React 19
+- **Styling & Animation:** Tailwind CSS, GSAP, Lenis
+- **Auth:** Clerk
+- **Browser APIs:** Web Speech API (TTS), native sharing, clipboard
 
-### Responder workspace
+**Backend:**
+- **Framework:** FastAPI (Python 3.12)
+- **Server:** Uvicorn
+- **AI / LLM:** Groq API (`llama-3.3-70b-versatile`)
+- **Embeddings:** `sentence-transformers/all-MiniLM-L6-v2` (Local)
+- **Steganography:** Custom pure Python LSB implementation
+- **Database / Vector Store:** MongoDB Atlas M0 (Free Tier) & SQLite
 
-A trusted person or responder can decode an SOS PNG, view the hidden message,
-classify urgency, and review saved cases in severity order.
+---
 
-### Trusted-contact voice bridge
+## 🚀 Setup Instructions
 
-The user can provide their name, location, situation, instructions, and optional
-chat summary. A live voice agent explains the situation to a trusted contact and
-answers factual follow-up questions from the supplied information.
+### Prerequisites
+- Node.js (v18+)
+- Python (v3.12+)
+- API Keys for Groq, MongoDB Atlas, and Clerk (for full functionality)
 
-### Email support and offline queue
+### 1. Backend Setup
 
-Help requests can be sent to a trusted person or configured support address. If
-the internet or email provider is temporarily unavailable, the request is saved
-in a local queue and retried automatically when connectivity returns.
-
-### Private direct messages
-
-Signed-in users can search by username, start one-to-one conversations, send
-messages, and retain message history after reloads and account switching.
-Realtime updates use WebSockets with polling fallback for reliability.
-
-## Architecture
-
-```text
-User
- |
- v
-Next.js frontend
-calculator, navigation, chat, SOS, responder, email, voice, DMs
- |
- | HTTP + WebSocket
- v
-FastAPI backend
-routers, validation, AI routing, steganography, queues, integrations
- |
- +--> Gemini / Groq / Ollama
- +--> MongoDB Atlas / SQLite / local corpus
- +--> Clerk authentication
- +--> EmailJS
- +--> Voice-agent provider
-```
-
-### Frontend
-
-- Next.js 16 with App Router
-- React 19 and TypeScript
-- Responsive CSS interface with pink, cream, and white visual language
-- GSAP and Lenis for smooth transitions and scrolling
-- Browser Web APIs for native sharing, clipboard, read-aloud, and keyboard exit
-- Clerk UI integration for username-based authentication
-
-### Backend
-
-- Python 3.12
-- FastAPI, Uvicorn, and Pydantic
-- Modular routers for SOS, companion, legal, health, responder, voice, email,
-  and direct messages
-- Provider fallbacks and clear source/provider labels
-
-### Storage and data
-
-- MongoDB Atlas for legal retrieval, responder cases, optional companion memory,
-  and remote persistent data when configured
-- SQLite for local direct-message persistence and the email queue
-- Local official legal corpus for offline retrieval fallback
-- Secrets stored only in `.env` and `.env.local` files
-
-## AI provider strategy
-
-Aegis is online-first. When internet access and API keys are available, the
-configured online model is used. If an online provider is unavailable, the
-system can fall back to another provider or Ollama running locally.
-
-This keeps the online experience high quality while preserving a useful local
-development and demonstration path. Every response identifies its provider or
-fallback source where relevant.
-
-## Local setup
-
-Start the backend in one PowerShell window:
+Open a PowerShell terminal and navigate to the backend directory:
 
 ```powershell
 cd D:\MyCodes\Aegis\aegis\backend
-.venv\Scripts\uvicorn.exe main:app --host 127.0.0.1 --port 8123
 ```
 
-Start the frontend in a second window:
+Run the backend server (assuming the virtual environment is already set up as per the old readme):
+
+```powershell
+.venv\Scripts\uvicorn.exe main:app --host 127.0.0.1 --port 8123
+```
+*(Ensure you have configured provider keys in `backend/.env`).*
+
+### 2. Frontend Setup
+
+Open a second PowerShell window and navigate to the frontend directory:
 
 ```powershell
 cd D:\MyCodes\Aegis\aegis\frontend
+```
+
+Install the required packages and start the Next.js development server:
+
+```powershell
 npm install
 npm run dev
 ```
+*(Ensure you have configured frontend public settings in `frontend/.env.local`).*
 
-Open the URL shown by Next.js, usually `http://localhost:3000`. Configure
-provider keys in `backend/.env` and frontend public settings in
-`frontend/.env.local`. Never commit real keys.
-
-## Suggested judge demonstration
-
-1. Open the calculator and reveal Aegis with `2580 =`.
-2. Create a discreet SOS image from a short situation.
-3. Show that the image looks ordinary and explain the hidden-message layer.
-4. Decode it in the responder workspace.
-5. Ask the Companion a short emotional-support question.
-6. Ask the Legal Bot a domestic-violence question and show its citations.
-7. Demonstrate a trusted-contact voice session or queued help email.
-8. Show private messaging between two authenticated usernames.
-
-## Future scope
-
-Aegis will evolve into a moderated support community with:
-
-- Community posts, image sharing, and group conversations
-- Verified legal-supporter and responder profiles
-- Legal-supporter tags and role-based access control
-- Trusted support-organization directory
-- More Indian languages and voice support
-- Stronger offline-first AI and communication capabilities
-- Better consent, encryption, retention, and data-deletion controls
-- Secure production deployment and expert review before public use
-
-The long-term vision is a safe, growing community where people can receive
-emotional support, understand their rights, contact trusted people, and find
-verified human help without being forced into one communication method.
-
-## Project structure
-
-```text
-aegis/
-├── frontend/        Next.js application and UI flows
-├── backend/         FastAPI application and services
-├── docs/            Architecture and integration guides
-└── plan.md          Phase-by-phase project plan
-```
-
-## Safety note
-
-Aegis is a prototype designed around safety and privacy. Legal and health
-responses are general information and should be verified with qualified
-professionals. In immediate danger, contact the appropriate local emergency
-service when it is safe to do so.
+### 3. Usage
+- Open your browser and go to the Next.js URL, usually `http://localhost:3000`.
+- You will see the calculator. Type `2580` and hit `=` to unlock the Aegis dashboard!
